@@ -90,14 +90,16 @@ jobs:
             const today = new Date().toISOString().slice(0, 10);
             const keyOf = r => `${r.kind}|${r.file}|${r.field}|${r.url}`;
 
-            // Build new state: streak counts only failures, omit recovered.
+            // Build new state: streak counts consecutive runs in the same failure
+            // category; first_seen resets when the category changes.
             const state = {};
             for (const r of rows) {
               if (r.category === 'ok') continue;
-              const prev = prior[keyOf(r)] || { streak: 0, first_seen: null };
+              const prev = prior[keyOf(r)] || {};
+              const sameCat = prev.category === r.category;
               state[keyOf(r)] = {
-                streak: (r.category === 'down' ? prev.streak : 0) + 1,
-                first_seen: prev.first_seen || today,
+                streak: sameCat ? (prev.streak || 0) + 1 : 1,
+                first_seen: sameCat ? (prev.first_seen || today) : today,
                 category: r.category
               };
             }
@@ -108,10 +110,16 @@ jobs:
             const down = downAll.filter(r => (state[keyOf(r)]?.streak || 0) >= downThreshold);
             const watching = downAll.filter(r => (state[keyOf(r)]?.streak || 0) < downThreshold);
 
+            const dirOf = (kind) => kind === 'content' ? 'data/content' : 'data/packages';
+            const fileLink = (r) => `[\`${r.file}\`](${dirOf(r.kind)}/${r.file})`;
             const fmtRow = r => {
-              const where = `\`${r.file}\` → \`${r.field}\``;
+              const where = `${fileLink(r)} → \`${r.field}\``;
               const detail = r.status ? `HTTP ${r.status}` : (r.error || 'no response');
-              const head = `- ${where} — ${detail}\n  - ${r.url}`;
+              const st = state[keyOf(r)];
+              const since = (st && st.first_seen && st.streak > 1)
+                ? ` _failing since ${st.first_seen} (${st.streak} runs)_`
+                : '';
+              const head = `- ${where} — ${detail}${since}\n  - ${r.url}`;
               if (r.suggestion && r.suggestion !== 'NA') {
                 return `${head}\n  - suggested replacement (og:image): \`${r.suggestion}\``;
               }
@@ -225,15 +233,30 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          BOT_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          existing_state=$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null || echo "")
+          if [ "$existing_state" = "CLOSED" ] || [ "$existing_state" = "MERGED" ]; then
+            echo "PR for $BRANCH is $existing_state — leaving alone."
+            exit 0
+          fi
+
+          git fetch origin "$BRANCH" 2>/dev/null || true
+          if git rev-parse --verify "origin/$BRANCH" >/dev/null 2>&1; then
+            base=$(git merge-base "origin/$BRANCH" HEAD)
+            non_bot=$(git log "$base..origin/$BRANCH" --pretty=format:'%ae' | grep -v -F "$BOT_EMAIL" | head -n1 || true)
+            if [ -n "$non_bot" ]; then
+              echo "Branch $BRANCH has non-bot commits — leaving it alone."
+              if [ -n "$existing_state" ]; then
+                gh pr comment "$BRANCH" --body "Sweep ran and found ${COUNT} new fix(es), but this branch has manual edits. Skipping the force-push so your changes aren't lost. Resolve or close this PR to let the next sweep open a fresh one."
+              fi
+              exit 0
+            fi
+          fi
+
           git checkout -B "$BRANCH"
           git add data/
           git commit -m "Replace ${COUNT} broken image URL(s) with og:image suggestions"
-
-          existing_state=$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null || echo "")
-          if [ "$existing_state" = "CLOSED" ] || [ "$existing_state" = "MERGED" ]; then
-            echo "PR for $BRANCH is $existing_state — refusing to force-push. A maintainer rejected or merged a previous version; clean up the branch or rename if you want a fresh attempt."
-            exit 0
-          fi
 
           git push --force-with-lease origin "$BRANCH"
 

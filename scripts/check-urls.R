@@ -17,8 +17,9 @@ PACKAGE_FIELDS <- list(
   logo_url        = list(image = TRUE,  homepage = "pkdown_url")
 )
 
-USER_AGENT <- "rladies-url-checker (+https://github.com/rladies/awesome-rladies-creations)"
-TIMEOUT_S  <- 20L
+USER_AGENT  <- "rladies-url-checker (+https://github.com/rladies/awesome-rladies-creations)"
+TIMEOUT_S   <- 20L
+MAX_ACTIVE  <- 8L
 
 `%||%` <- function(a, b) if (is.null(a) || (length(a) == 1 && is.na(a))) b else a
 
@@ -28,34 +29,44 @@ ensure_scheme <- function(url) {
   paste0("https://", url)
 }
 
+build_request <- function(full) {
+  request(full) |>
+    req_user_agent(USER_AGENT) |>
+    req_timeout(TIMEOUT_S) |>
+    req_retry(
+      max_tries = 2L,
+      retry_on_failure = TRUE,
+      is_transient = function(resp) resp_status(resp) >= 500L
+    ) |>
+    req_error(is_error = function(x) FALSE)
+}
+
+categorise_resp <- function(resp_or_err, expect_image) {
+  if (inherits(resp_or_err, "error")) {
+    return(list(status = NA_integer_, content_type = NA_character_,
+                error = conditionMessage(resp_or_err), category = "down"))
+  }
+  status <- resp_status(resp_or_err)
+  ctype  <- tryCatch(resp_content_type(resp_or_err), error = function(e) NA_character_)
+  category <-
+    if (status %in% c(404L, 410L))                                                   "broken"
+    else if (status >= 500L)                                                         "down"
+    else if (status >= 400L)                                                         "broken"
+    else if (expect_image && (length(ctype) == 0 ||
+                              !grepl("^image/", ctype, ignore.case = TRUE)))         "not_image"
+    else                                                                             "ok"
+  list(status = status, content_type = ctype %||% NA_character_,
+       error = NA_character_, category = category)
+}
+
 check_url <- function(url, expect_image = FALSE) {
   full <- ensure_scheme(url)
   if (is.na(full)) {
     return(list(status = NA_integer_, content_type = NA_character_,
                 error = "could not build URL", category = "broken"))
   }
-  resp <- tryCatch(
-    request(full) |>
-      req_user_agent(USER_AGENT) |>
-      req_timeout(TIMEOUT_S) |>
-      req_error(is_error = function(x) FALSE) |>
-      req_perform(),
-    error = function(e) e
-  )
-  if (inherits(resp, "error")) {
-    return(list(status = NA_integer_, content_type = NA_character_,
-                error = conditionMessage(resp), category = "down"))
-  }
-  status <- resp_status(resp)
-  ctype  <- tryCatch(resp_content_type(resp), error = function(e) NA_character_)
-  category <-
-    if (status %in% c(404L, 410L)) "broken"
-    else if (status >= 500L)       "down"
-    else if (status >= 400L)       "broken"
-    else if (expect_image && (length(ctype) == 0 || !grepl("^image/", ctype, ignore.case = TRUE))) "not_image"
-    else "ok"
-  list(status = status, content_type = ctype %||% NA_character_,
-       error = NA_character_, category = category)
+  resp <- tryCatch(req_perform(build_request(full)), error = function(e) e)
+  categorise_resp(resp, expect_image)
 }
 
 suggest_replacement <- function(homepage_url) {
@@ -70,7 +81,7 @@ suggest_replacement <- function(homepage_url) {
   NA_character_
 }
 
-scan_dir <- function(dir, fields, kind) {
+collect_targets <- function(dir, fields, kind) {
   if (!dir.exists(dir)) return(list())
   files <- list.files(dir, pattern = "\\.json$", full.names = TRUE)
   out <- list()
@@ -81,43 +92,77 @@ scan_dir <- function(dir, fields, kind) {
       cfg <- fields[[field]]
       url <- entry[[field]]
       if (is_blank(url)) next
-      res <- check_url(url, expect_image = cfg$image)
-      suggestion <- NA_character_
-      if (cfg$image && res$category != "ok" && !is.null(cfg$homepage)) {
-        cat(sprintf("  broken %s in %s — looking for og:image...\n", field, basename(f)))
-        suggestion <- suggest_replacement(entry[[cfg$homepage]])
-      }
-      out[[length(out) + 1]] <- data.frame(
-        kind = kind,
-        file = basename(f),
-        field = field,
-        url = url,
-        status = res$status %||% NA_integer_,
-        content_type = res$content_type %||% NA_character_,
-        category = res$category,
-        error = res$error %||% NA_character_,
-        suggestion = suggestion %||% NA_character_,
-        stringsAsFactors = FALSE
+      out[[length(out) + 1]] <- list(
+        kind     = kind,
+        file     = basename(f),
+        field    = field,
+        url      = url,
+        full     = ensure_scheme(url),
+        image    = isTRUE(cfg$image),
+        homepage = if (!is.null(cfg$homepage)) entry[[cfg$homepage]] else NA_character_
       )
     }
   }
   out
 }
 
-cat("Scanning data/content...\n")
-content_rows <- scan_dir(here("data", "content"),  CONTENT_FIELDS, "content")
-cat("Scanning data/packages...\n")
-package_rows <- scan_dir(here("data", "packages"), PACKAGE_FIELDS, "package")
+cat("Collecting URL targets...\n")
+targets <- c(
+  collect_targets(here("data", "content"),  CONTENT_FIELDS, "content"),
+  collect_targets(here("data", "packages"), PACKAGE_FIELDS, "package")
+)
+cat(sprintf("Found %d URL targets across %d files\n",
+            length(targets),
+            length(unique(vapply(targets, function(t) t$file, character(1))))))
 
-all_rows <- c(content_rows, package_rows)
-results <- if (length(all_rows) == 0) {
-  data.frame(kind = character(), file = character(), field = character(),
-             url = character(), status = integer(), content_type = character(),
-             category = character(), error = character(), suggestion = character())
-} else {
-  do.call(rbind, all_rows)
+valid_idx <- which(!is.na(vapply(targets, function(t) t$full, character(1))))
+invalid_targets <- targets[setdiff(seq_along(targets), valid_idx)]
+valid_targets   <- targets[valid_idx]
+
+cat(sprintf("Checking %d URLs in parallel (max_active=%d)...\n",
+            length(valid_targets), MAX_ACTIVE))
+reqs <- lapply(valid_targets, function(t) build_request(t$full))
+resps <- req_perform_parallel(reqs, on_error = "continue", max_active = MAX_ACTIVE)
+
+rows <- vector("list", length(valid_targets) + length(invalid_targets))
+for (i in seq_along(valid_targets)) {
+  t <- valid_targets[[i]]
+  res <- categorise_resp(resps[[i]], t$image)
+  suggestion <- NA_character_
+  if (t$image && res$category != "ok" && !is.na(t$homepage)) {
+    cat(sprintf("  broken %s in %s — looking for og:image...\n", t$field, t$file))
+    suggestion <- suggest_replacement(t$homepage)
+  }
+  rows[[i]] <- data.frame(
+    kind         = t$kind,
+    file         = t$file,
+    field        = t$field,
+    url          = t$url,
+    status       = res$status %||% NA_integer_,
+    content_type = res$content_type %||% NA_character_,
+    category     = res$category,
+    error        = res$error %||% NA_character_,
+    suggestion   = suggestion %||% NA_character_,
+    stringsAsFactors = FALSE
+  )
+}
+for (j in seq_along(invalid_targets)) {
+  t <- invalid_targets[[j]]
+  rows[[length(valid_targets) + j]] <- data.frame(
+    kind         = t$kind,
+    file         = t$file,
+    field        = t$field,
+    url          = t$url,
+    status       = NA_integer_,
+    content_type = NA_character_,
+    category     = "broken",
+    error        = "could not build URL",
+    suggestion   = NA_character_,
+    stringsAsFactors = FALSE
+  )
 }
 
+results <- do.call(rbind, rows)
 results <- results[order(results$category, results$kind, results$file, results$field), ]
 
 out_path <- "url-check-report.tsv"
