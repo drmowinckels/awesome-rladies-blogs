@@ -47,12 +47,20 @@ jobs:
         run: source("scripts/generate_website_jsons.R")
         shell: Rscript {0}
 
+      - name: Generate app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.JINX_APP_ID }}
+          private-key: ${{ secrets.JINX_PRIVATE_KEY }}
+          owner: rladies
+
       - name: Commit data
         env:
-          GITHUB_PAT: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_PAT: ${{ steps.app-token.outputs.token }}
         run: |
-          git config --local user.name "$GITHUB_ACTOR"
-          git config --local user.email "$GITHUB_ACTOR@users.noreply.github.com"
+          git config --local user.name "Jinx[bot]"
+          git config --local user.email "jinx@rladies.org"
           git add README.md data/website
           git diff --cached --quiet || git commit -m 'Update README and aggregated website JSONs'
           git push origin || echo "Nothing to push"
