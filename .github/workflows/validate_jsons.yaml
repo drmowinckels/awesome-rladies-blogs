@@ -23,6 +23,7 @@ on:
       - "scripts/json_schema/**"
       - "scripts/test_helpers.R"
       - "scripts/discover_helpers.R"
+      - "scripts/sync_from_runiverse.R"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

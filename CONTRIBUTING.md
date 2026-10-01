@@ -146,9 +146,10 @@ not have listed, set `"rladies": false` on that entry in your
 ]
 ```
 
-Only `false` excludes a package. Leaving the key out, or setting it to
-`true`, both keep it listed — so an existing `"rladies": true` keeps working
-and needs no edit.
+Leaving the key out, or setting it to `true`, keeps a package listed — so an
+existing `"rladies": true` keeps working and needs no edit. To exclude, any of
+`false`, `"false"`, `"no"`, `"off"` or `0` works, so a stray pair of quotes
+won't quietly leave a package listed.
 
 We also **only list packages you wrote**. Universes routinely build packages
 their owner merely contributes to or mirrors, so a package is skipped unless

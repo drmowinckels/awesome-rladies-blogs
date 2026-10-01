@@ -171,13 +171,17 @@ for (o in optins) {
   }
   marked <- 0L
   excluded <- 0L
-  for (entry in cfg) {
+  for (entry in as_pkg_entries(cfg)) {
     if (pkg_opted_out(entry)) {
       excluded <- excluded + 1L
       next
     }
     pkg <- infer_pkg_name(entry)
     if (is_blank(pkg)) {
+      next
+    }
+    if (!valid_pkg_name(pkg)) {
+      cat("  ignoring implausible package name: ", pkg, "\n", sep = "")
       next
     }
     claims[[pkg]] <- unique(c(claims[[pkg]] %||% character(0), o$handle))
@@ -225,7 +229,8 @@ for (pkg in names(claims)) {
       sep = ""
     )
     # Keep it in `claims`: a transient fetch failure must not look like an
-    # opt-out and get the package proposed for removal.
+    # opt-out and get the package proposed for removal. Same for a rejected
+    # name below — both land in `failed`, meaning "claimed but not written".
     failed <- c(failed, pkg)
     next
   }
@@ -304,6 +309,11 @@ if (mode == "upsert") {
         a
       })
     }
+    if (!valid_pkg_name(entry$name)) {
+      cat("  refusing to write implausible name: ", entry$name, "\n", sep = "")
+      failed <- c(failed, pkg)
+      next
+    }
     path <- file.path(packages_dir, paste0(entry$name, ".json"))
     existed <- file.exists(path)
     write_pkg(entry, packages_dir)
@@ -334,7 +344,7 @@ if (mode == "upsert") {
   cat("\nSummary:\n")
   cat("  added             : ", length(added), "\n", sep = "")
   cat("  updated           : ", length(updated), "\n", sep = "")
-  cat("  fetch failures    : ", length(failed), "\n", sep = "")
+  cat("  skipped, unwritable: ", length(failed), "\n", sep = "")
   cat("  skipped, not author: ", length(not_authored), "\n", sep = "")
   cat("  skipped, unverified: ", length(unverified), "\n", sep = "")
   cat("  removal candidates: ", length(removal_candidates), "\n", sep = "")
@@ -342,7 +352,7 @@ if (mode == "upsert") {
   removed <- character(0)
   remaining <- list()
   for (name in names(state$managed)) {
-    if (is.null(claims[[name]])) {
+    if (is.null(claims[[name]]) && valid_pkg_name(name)) {
       path <- file.path(packages_dir, paste0(name, ".json"))
       if (file.exists(path)) {
         file.remove(path)

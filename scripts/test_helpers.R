@@ -85,6 +85,51 @@ ok("explicit false opts out", pkg_opted_out(list(rladies = FALSE)))
 ok("absent key stays in", !pkg_opted_out(list(package = "x")))
 ok("true stays in", !pkg_opted_out(list(rladies = TRUE)))
 ok("NULL stays in", !pkg_opted_out(list(rladies = NULL)))
+ok("NA stays in", !pkg_opted_out(list(rladies = NA)))
+# packages.json is hand-written. Missing an opt-out means publishing someone's
+# package against their stated wish, so accept the spellings people type.
+ok('string "false" opts out', pkg_opted_out(list(rladies = "false")))
+ok('string "FALSE" opts out', pkg_opted_out(list(rladies = "FALSE")))
+ok('string " No " opts out', pkg_opted_out(list(rladies = " No ")))
+ok('string "off" opts out', pkg_opted_out(list(rladies = "off")))
+ok("numeric 0 opts out", pkg_opted_out(list(rladies = 0)))
+ok('string "true" stays in', !pkg_opted_out(list(rladies = "true")))
+ok('unrecognised value stays in', !pkg_opted_out(list(rladies = "maybe")))
+ok("non-list entry stays in", !pkg_opted_out("junk"))
+
+cat("valid_pkg_name\n")
+ok("accepts a normal name", valid_pkg_name("tourr"))
+ok("accepts periods", valid_pkg_name("ggseg.formats"))
+ok("accepts digits", valid_pkg_name("r2d3"))
+ok("accepts mixed case", valid_pkg_name("RobMixReg"))
+# These reach file.path(dir, paste0(name, ".json")) on a job that pushes to main.
+ok("rejects parent traversal", !valid_pkg_name("../../.github/workflows/x"))
+ok("rejects a slash", !valid_pkg_name("a/b"))
+ok("rejects a leading dot", !valid_pkg_name(".hidden"))
+ok("rejects a trailing dot", !valid_pkg_name("trailing."))
+ok("rejects a leading digit", !valid_pkg_name("2fast"))
+ok("rejects whitespace", !valid_pkg_name("has space"))
+ok("rejects empty", !valid_pkg_name(""))
+ok("rejects NA", !valid_pkg_name(NA_character_))
+ok("rejects NULL", !valid_pkg_name(NULL))
+
+cat("as_pkg_entries\n")
+ok("array of entries passes through", length(as_pkg_entries(list(
+  list(package = "a"),
+  list(package = "b")
+))) == 2)
+ok(
+  "a single JSON object is wrapped, not iterated field-wise",
+  identical(as_pkg_entries(list(package = "a", url = "u")), list(list(
+    package = "a",
+    url = "u"
+  )))
+)
+ok("NULL becomes empty", length(as_pkg_entries(NULL)) == 0)
+ok(
+  "stray scalars are dropped",
+  length(as_pkg_entries(list(list(package = "a"), "junk"))) == 1
+)
 
 cat("\n")
 if (length(failures) > 0) {
