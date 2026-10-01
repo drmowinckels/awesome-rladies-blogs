@@ -98,16 +98,14 @@ jobs:
           git push --force-with-lease origin auto/runiverse-removals
 
           rows=$(printf '%s\n' "$REMOVALS" | awk 'NF { print "- `" $0 "`" }')
-          body=$(cat <<EOF
-The R-Universe \`packages.json\` for one or more opted-in authors no longer marks the following package(s) with \`"rladies": true\`. Review and merge to drop them from the directory.
-
-Candidates:
-
-${rows}
-
-Multi-author packages: double-check before merging — another R-Ladies+ author might still legitimately be listed even though this opt-in dropped the flag.
-EOF
-)
+          body=$(printf '%s\n' \
+            'An opted-in author'"'"'s R-Universe no longer lists the following package(s), or has marked them `"rladies": false`. Review and merge to drop them from the directory.' \
+            '' \
+            'Candidates:' \
+            '' \
+            "${rows}" \
+            '' \
+            'Multi-author packages: double-check before merging — another R-Ladies+ author might still legitimately be listed even though this opt-in dropped it.')
 
           if gh pr list --head auto/runiverse-removals --state open --json number | grep -q '"number"'; then
             gh pr edit auto/runiverse-removals \

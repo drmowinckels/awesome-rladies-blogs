@@ -1,9 +1,16 @@
 #!/usr/bin/env Rscript
-# Sync data/packages/ from the opt-in R-Universe registry.
+# Sync data/packages/ from the R-Universe registry.
 #
-# Authors opt in by adding data/runiverse/<handle>.json. The sync looks at
+# Authors opt in by adding data/runiverse/<handle>.json. Registering the handle
+# is the opt-in: the sync looks at
 # https://raw.githubusercontent.com/<handle>/<handle>.r-universe.dev/HEAD/packages.json
-# and treats any entry with `"rladies": true` as claimed by that handle.
+# and claims every entry for that handle *except* ones marked
+# `"rladies": false`, which is the per-package opt-out.
+#
+# Because a universe routinely also builds packages its owner only contributes
+# to or mirrors, a claim additionally has to pass an authorship check: the
+# registrant must be an `aut`/`cre` (or the maintainer) of the package. Without
+# that, opt-out semantics would sweep in packages the registrant did not write.
 #
 # Two modes (set with SYNC_MODE env var):
 #   - upsert: add/update package JSONs for every claimed package; write the
@@ -46,7 +53,8 @@ load_optins <- function(dir) {
     }
     out[[length(out) + 1]] <- list(
       handle = tolower(trimws(e$handle)),
-      directory_id = e$directory_id %||% NA_character_
+      directory_id = e$directory_id %||% NA_character_,
+      name = e$name %||% NA_character_
     )
   }
   out
@@ -77,6 +85,22 @@ fetch_runiverse_config <- function(handle) {
     if (!is.null(parsed)) return(parsed)
   }
   NULL
+}
+
+registrant_name <- function(optin, dir_lookup) {
+  if (!is_blank(optin$name)) {
+    return(trimws(optin$name))
+  }
+  if (!is_blank(optin$directory_id)) {
+    nm <- dir_lookup$by_slug[[tolower(trimws(optin$directory_id))]]
+    if (!is_blank(nm)) return(nm)
+  }
+  slug <- dir_lookup$by_handle[[optin$handle]]
+  if (!is_blank(slug)) {
+    nm <- dir_lookup$by_slug[[tolower(slug)]]
+    if (!is_blank(nm)) return(nm)
+  }
+  NA_character_
 }
 
 infer_pkg_name <- function(entry) {
@@ -127,16 +151,29 @@ if (is.null(state$managed)) {
 dir_lookup <- build_directory_lookup(directory_dir)
 
 claims <- list()
+claim_names <- list()
+claim_ids <- list()
 for (o in optins) {
   cat("Fetching packages.json for ", o$handle, "\n", sep = "")
+  reg_name <- registrant_name(o, dir_lookup)
+  if (is.na(reg_name)) {
+    cat(
+      "  no display name available (add \"name\" to data/runiverse/",
+      o$handle,
+      ".json); authorship will fall back to repo ownership\n",
+      sep = ""
+    )
+  }
   cfg <- fetch_runiverse_config(o$handle)
   if (is.null(cfg)) {
     cat("  could not fetch packages.json — skipping\n")
     next
   }
   marked <- 0L
+  excluded <- 0L
   for (entry in cfg) {
-    if (!isTRUE(entry$rladies)) {
+    if (pkg_opted_out(entry)) {
+      excluded <- excluded + 1L
       next
     }
     pkg <- infer_pkg_name(entry)
@@ -144,34 +181,104 @@ for (o in optins) {
       next
     }
     claims[[pkg]] <- unique(c(claims[[pkg]] %||% character(0), o$handle))
+    claim_names[[pkg]] <- unique(c(
+      claim_names[[pkg]] %||% character(0),
+      reg_name
+    ))
+    if (!is.na(reg_name) && !is_blank(o$directory_id)) {
+      ids <- claim_ids[[pkg]] %||% character(0)
+      ids[[reg_name]] <- trimws(o$directory_id)
+      claim_ids[[pkg]] <- ids
+    }
     marked <- marked + 1L
   }
-  cat("  ", marked, " package(s) flagged rladies:true\n", sep = "")
+  cat(
+    "  ",
+    marked,
+    " package(s) claimed, ",
+    excluded,
+    " opted out\n",
+    sep = ""
+  )
 }
+
+# Fetch metadata once and apply the authorship gate here, before the mode
+# branch, so upsert and remove agree on what is genuinely claimed.
+metas <- list()
+failed <- character(0)
+not_authored <- character(0)
+unverified <- character(0)
+for (pkg in names(claims)) {
+  handles <- claims[[pkg]]
+  primary <- handles[[1]]
+  meta <- tryCatch(
+    fetch_universe_package(primary, pkg),
+    error = function(e) NULL
+  )
+  if (is.null(meta) || is_blank(meta$Package)) {
+    cat(
+      "  could not fetch metadata for ",
+      pkg,
+      " from ",
+      primary,
+      "\n",
+      sep = ""
+    )
+    # Keep it in `claims`: a transient fetch failure must not look like an
+    # opt-out and get the package proposed for removal.
+    failed <- c(failed, pkg)
+    next
+  }
+  # Registering a universe is a blanket opt-in, so the registrant must actually
+  # be an author here — universes also build packages their owner only
+  # contributes to (e.g. a `ctb` on someone else's package).
+  reg_names <- claim_names[[pkg]] %||% character(0)
+  reg_names <- reg_names[!is.na(reg_names)]
+  if (length(reg_names) > 0) {
+    authored <- any(vapply(
+      reg_names,
+      function(nm) is_authorship(nm, meta$Author, meta$Maintainer),
+      logical(1)
+    ))
+    if (!authored) {
+      cat(
+        "  skipping ",
+        pkg,
+        " — ",
+        paste(reg_names, collapse = " / "),
+        " is not aut/cre\n",
+        sep = ""
+      )
+      not_authored <- c(not_authored, pkg)
+      next
+    }
+  } else if (
+    !any(vapply(handles, function(h) owner_match(meta, h), logical(1)))
+  ) {
+    cat(
+      "  skipping ",
+      pkg,
+      " — cannot verify authorship (no name, repo not owned by opt-in)\n",
+      sep = ""
+    )
+    unverified <- c(unverified, pkg)
+    next
+  }
+  metas[[pkg]] <- meta
+}
+
+# Gate rejections stop being claims, so a package that no longer qualifies is
+# proposed for removal. Fetch failures stay claimed and are simply not written.
+gate_rejected <- c(not_authored, unverified)
+claims <- claims[!(names(claims) %in% gate_rejected)]
 
 if (mode == "upsert") {
   added <- character(0)
   updated <- character(0)
-  failed <- character(0)
-  for (pkg in names(claims)) {
+  for (pkg in names(metas)) {
     handles <- claims[[pkg]]
     primary <- handles[[1]]
-    meta <- tryCatch(
-      fetch_universe_package(primary, pkg),
-      error = function(e) NULL
-    )
-    if (is.null(meta) || is_blank(meta$Package)) {
-      cat(
-        "  could not fetch metadata for ",
-        pkg,
-        " from ",
-        primary,
-        "\n",
-        sep = ""
-      )
-      failed <- c(failed, pkg)
-      next
-    }
+    meta <- metas[[pkg]]
     cand <- normalise_pkg(
       meta,
       "r-universe",
@@ -180,6 +287,23 @@ if (mode == "upsert") {
       NA_character_
     )
     entry <- to_package_shape(cand, dir_lookup)
+    # The R-Ladies directory repo is private, so `dir_lookup` is usually empty
+    # in CI and `to_package_shape` cannot attach a directory_id. We do know the
+    # registrant's own slug from their opt-in file, so link at least that author.
+    ids <- claim_ids[[pkg]] %||% character(0)
+    if (length(ids) > 0) {
+      entry$authors <- lapply(entry$authors, function(a) {
+        if (is_blank(a$directory_id)) {
+          for (nm in names(ids)) {
+            if (names_match(a$name, nm)) {
+              a$directory_id <- ids[[nm]]
+              break
+            }
+          }
+        }
+        a
+      })
+    }
     path <- file.path(packages_dir, paste0(entry$name, ".json"))
     existed <- file.exists(path)
     write_pkg(entry, packages_dir)
@@ -203,12 +327,16 @@ if (mode == "upsert") {
   write_gha_output("added", added)
   write_gha_output("updated", updated)
   write_gha_output("failed", failed)
+  write_gha_output("not_authored", not_authored)
+  write_gha_output("unverified", unverified)
   write_gha_output("removal_candidates", removal_candidates)
 
   cat("\nSummary:\n")
   cat("  added             : ", length(added), "\n", sep = "")
   cat("  updated           : ", length(updated), "\n", sep = "")
   cat("  fetch failures    : ", length(failed), "\n", sep = "")
+  cat("  skipped, not author: ", length(not_authored), "\n", sep = "")
+  cat("  skipped, unverified: ", length(unverified), "\n", sep = "")
   cat("  removal candidates: ", length(removal_candidates), "\n", sep = "")
 } else {
   removed <- character(0)

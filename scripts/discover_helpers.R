@@ -372,11 +372,29 @@ owner_match <- function(pkg, handle) {
   isTRUE(tolower(pkg$`_owner` %||% "") == tolower(handle))
 }
 
+# DESCRIPTION Author fields are hard-wrapped, so a name can arrive split over a
+# line break ("Steffi\nLaZerte [aut]"). Collapse whitespace before matching or
+# those authors are silently missed.
+norm_ws <- function(x) {
+  trimws(gsub("[[:space:]]+", " ", x))
+}
+
 name_in <- function(needle, haystack) {
   if (is_blank(needle) || is_blank(haystack)) {
     return(FALSE)
   }
-  grepl(tolower(ascii(needle)), tolower(ascii(haystack)), fixed = TRUE)
+  grepl(
+    norm_ws(tolower(ascii(needle))),
+    norm_ws(tolower(ascii(haystack))),
+    fixed = TRUE
+  )
+}
+
+# Registering an R-Universe is a blanket opt-in, so a package is included unless
+# its entry explicitly carries `"rladies": false`. Anything else — the key being
+# absent, true, or some other value — leaves the package claimed.
+pkg_opted_out <- function(entry) {
+  identical(entry$rladies, FALSE)
 }
 
 accepted_roles <- c("cre", "aut")
@@ -385,8 +403,8 @@ roles_for <- function(name, author_text) {
   if (is_blank(author_text)) {
     return("unknown")
   }
-  hay <- tolower(ascii(author_text))
-  needle <- tolower(ascii(name))
+  hay <- norm_ws(tolower(ascii(author_text)))
+  needle <- norm_ws(tolower(ascii(name)))
   pos <- regexpr(needle, hay, fixed = TRUE)
   if (pos == -1) {
     return(character(0))

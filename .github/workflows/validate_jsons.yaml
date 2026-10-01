@@ -10,6 +10,9 @@ on:
       - "data/runiverse/**"
       - "scripts/json_schema/**"
       - "scripts/validate_jsons.R"
+      - "scripts/test_helpers.R"
+      - "scripts/discover_helpers.R"
+      - "scripts/sync_from_runiverse.R"
       - ".github/workflows/validate_jsons.yaml"
   push:
     branches: [main]
@@ -18,6 +21,8 @@ on:
       - "data/packages/**"
       - "data/runiverse/**"
       - "scripts/json_schema/**"
+      - "scripts/test_helpers.R"
+      - "scripts/discover_helpers.R"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -42,6 +47,9 @@ jobs:
 
       - name: Setup renv
         uses: r-lib/actions/setup-renv@v2
+
+      - name: Test matching helpers
+        run: Rscript scripts/test_helpers.R
 
       - name: Validate JSON metadata
         run: Rscript scripts/validate_jsons.R

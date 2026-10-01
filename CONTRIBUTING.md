@@ -18,9 +18,8 @@ under `data/content/` or `data/packages/`, and open a PR — see
 
 If you maintain an R-Universe and would like us to keep your packages here in
 sync automatically, see
-[Opt in to R-Universe sync](#opt-in-to-r-universe-sync) below — you flag
-which packages you want listed inside your own `packages.json`, and a
-scheduled job picks them up.
+[Opt in to R-Universe sync](#opt-in-to-r-universe-sync) below — registering
+your universe once is the opt-in, and a scheduled job follows it from there.
 
 ## Recommended: open an issue
 
@@ -115,6 +114,7 @@ repository follow it automatically instead of opening an issue per package.
 ```json
 {
   "handle": "drmowinckels",
+  "name": "Athanasia Mo Mowinckel",
   "directory_id": "athanasia-mo-mowinckel"
 }
 ```
@@ -122,33 +122,50 @@ repository follow it automatically instead of opening an issue per package.
 - `handle` is the sub-domain of your R-Universe (`drmowinckels` for
   `drmowinckels.r-universe.dev`). It's also the GitHub user or org that owns
   the `<handle>.r-universe.dev` config repo.
+- `name` is your name as it appears in package `Author` / `Maintainer`
+  fields. We use it to confirm you're actually an `aut` or `cre` before
+  listing something, and to link the entry to your directory profile.
 - `directory_id` is optional — your slug in the
   [R-Ladies directory](https://github.com/rladies/directory).
 
-**Per package** — in your R-Universe's `packages.json`, set `"rladies":
-true` on each entry you want listed here:
+That's the whole opt-in. **Registering your universe opts in all of it**, so
+you don't have to flag packages one at a time.
+
+**Opting a package out** — if there's something in your universe you'd rather
+not have listed, set `"rladies": false` on that entry in your
+`packages.json`:
 
 ```json
 [
+  { "package": "ggseg", "url": "https://github.com/ggsegverse/ggseg" },
   {
-    "package": "ggseg",
-    "url": "https://github.com/ggsegverse/ggseg",
-    "rladies": true
-  },
-  { "package": "some-other-pkg", "url": "https://github.com/you/other" }
+    "package": "work-in-progress",
+    "url": "https://github.com/you/wip",
+    "rladies": false
+  }
 ]
 ```
 
+Only `false` excludes a package. Leaving the key out, or setting it to
+`true`, both keep it listed — so an existing `"rladies": true` keeps working
+and needs no edit.
+
+We also **only list packages you wrote**. Universes routinely build packages
+their owner merely contributes to or mirrors, so a package is skipped unless
+you're an `aut`/`cre` (or its maintainer). A `ctb` credit on someone else's
+package won't be claimed as yours.
+
 A scheduled job runs once a week:
 
-- Packages newly flagged `"rladies": true` are added or updated under
-  `data/packages/` and committed straight to `main` for you.
-- Packages that previously had the flag but no longer do are proposed for
-  removal in a draft pull request — a maintainer reviews before merging,
-  since some packages have several authors.
+- Newly claimed packages are added or updated under `data/packages/` and
+  committed straight to `main` for you.
+- Packages you've since opted out of, removed from your universe, or that no
+  longer list you as an author are proposed for removal in a draft pull
+  request — a maintainer reviews before merging, since some packages have
+  several authors.
 
-Stop syncing entirely by removing your `data/runiverse/<handle>.json` (or
-clearing every `"rladies": true` flag in your `packages.json`).
+Stop syncing entirely by removing your `data/runiverse/<handle>.json` (or set
+`"rladies": false` on every entry in your `packages.json`).
 
 ## After your PR is opened
 
